@@ -41,6 +41,12 @@ pub struct Select<'a> {
     // limit: Option<?????>, // TODO
 }
 
+impl<'a> fmt::Display for Select<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.body)
+    }
+}
+
 pub fn parse(query: &str) -> Result<Select, ParseError> {
     match select_stmt(query).finish() {
         Err(err) => Err(ParseError::from_verbose(query, err)),
@@ -68,12 +74,51 @@ enum SelectBody<'a> {
     },
 }
 
+impl<'a> fmt::Display for SelectBody<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SelectBody::Select{ distinct, columns, from, where_, groupby, having } => {
+                write!(
+                    f,
+                    "SELECT{} {} FROM {}",
+                    (if *distinct { " DISTINCT" } else { "" }),
+                    (if let Some(cs) = columns { cs.to_string() } else { "".to_string() }),
+                    (if let Some(from) = from { from.to_string() } else { "".to_string() }),
+                )
+            }
+            SelectBody::Values(values) => {
+                write!(
+                    f,
+                    "VALUES {}",
+                    values.iter().map(|x| {
+                        format!("({})", x.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", "))
+                    }).collect::<Vec<_>>().join(", "),
+                )
+            }
+            SelectBody::Compound{ operator, left, right } => {
+                write!(f, "{} {} {}", left, operator, right)
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CompoundOperator {
     Union,
     UnionAll,
     Intersect,
     Except,
+}
+
+impl fmt::Display for CompoundOperator {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            CompoundOperator::Union => "UNION",
+            CompoundOperator::UnionAll => "UNION ALL",
+            CompoundOperator::Intersect => "INTERSECT",
+            CompoundOperator::Except => "EXCEPT",
+        })
+    }
 }
 
 fn select_stmt(i: &str) -> IResult<&str, Select, VerboseError<&str>> {
@@ -178,10 +223,18 @@ fn distinct_mode(i: &str) -> IResult<&str, bool, VerboseError<&str>> {
 }
 
 #[derive(Debug)]
-struct CommaList<T>(Vec<T>);
+struct CommaList<T>(Vec<T>) where T: fmt::Display;
+
+impl<T> fmt::Display for CommaList<T>
+where T: fmt::Display {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
+    }
+}
 
 fn comma_list<'a, O, E, F>(f: F) -> impl FnMut(&'a str) -> IResult<&'a str, CommaList<O>, E>
 where
+    O: fmt::Display,
     F: nom::Parser<&'a str, O, E>,
     E: nom::error::ParseError<&'a str>,
 {
@@ -199,6 +252,17 @@ enum Column<'a> {
     },
     All,
     AllFrom(&'a str),
+}
+
+impl<'a> fmt::Display for Column<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Column::Expr{expr, alias: None} => write!(f, "[{}]", expr),
+            Column::Expr{expr, alias: Some(alias)} => write!(f, "[{}] AS [{}]", expr, alias),
+            Column::All => write!(f, "*"),
+            Column::AllFrom(table) => write!(f, "[{}].*", table),
+        }
+    }
 }
 
 fn column_list(i: &str) -> IResult<&str, CommaList<Column>, VerboseError<&str>> {
@@ -243,6 +307,21 @@ enum Table<'a> {
         left: Box<Table<'a>>,
         right: Box<Table<'a>>,
     },
+}
+
+impl<'a> fmt::Display for Table<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Table::Name{name, alias: None} => write!(f, "[{}]", name),
+            Table::Name{name, alias: Some(alias)} => write!(f, "[{}] AS [{}]", name, alias),
+            Table::Func{func, expr, alias: None} => write!(f, "{}({})", func, expr),
+            Table::Func{func, expr, alias: Some(alias)} => write!(f, "{}({}) AS [{}]", func, expr, alias),
+            Table::Select(select) => write!(f, "({})", select),
+            Table::Join{..} => {
+                write!(f, "JOIN IS NOT SUPPORTED YET") // TODO
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -301,6 +380,12 @@ fn identifier(i: &str) -> IResult<&str, &str, VerboseError<&str>> {
 
 #[derive(Debug)]
 struct Expr<'a>(Vec<&'a str>);
+
+impl<'a> fmt::Display for Expr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0.join(" "))
+    }
+}
 
 fn expression(i: &str) -> IResult<&str, Expr, VerboseError<&str>> {
     map(
